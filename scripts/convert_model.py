@@ -1,11 +1,12 @@
 """Convert a MindSurf checkpoint to a Hugging Face Llama model.
 
 Usage:
-    uv run scripts/convert_model.py \
-        --checkpoint models/checkpoints/final_model.pt \
-        --model-config configs/model/minimind.yaml \
-        --output-dir models/mindsurf-llama \
-        --tokenizer path/to/tokenizer
+    uv run scripts/convert_model.py   
+        --checkpoint models/checkpoints/test/final_model.pt   
+        --model-config configs/model/minimind_small.yaml   
+        --output-dir models/transformers/mindsurf2llama   
+        --tokenizer models/tokenizers/minimind_tokenizer   
+        --dtype float16
 """
 
 from __future__ import annotations
