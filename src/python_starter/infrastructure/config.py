@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
 
     # API Server
+    vllm_base_url: str = Field(default="http://localhost:8001", alias="VLLM_BASE_URL")
+    vllm_model: str = Field(default="minimind", alias="VLLM_MODEL")
+    vllm_api_key: str | None = Field(default=None, alias="VLLM_API_KEY")
     api_host: str = Field(default="0.0.0.0", alias="API_HOST")
     api_port: int = Field(default=8000, alias="API_PORT")
 

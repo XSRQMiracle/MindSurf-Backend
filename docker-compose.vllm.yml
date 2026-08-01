@@ -1,0 +1,43 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.26.0
+    gpus: all
+    ipc: host
+    environment:
+      VLLM_USE_V2_MODEL_RUNNER: "0"
+    volumes:
+      # 宿主机路径:容器路径:ro
+      # 修改路径只需修改前者
+      - ./models/transformers/mindsurf-pretrain-80m-qwen3:/models/minimind:ro
+    command:
+      - --model
+      - /models/minimind
+      - --served-model-name
+      - minimind
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --dtype
+      - float16
+      - --max-model-len
+      - "512"
+      - --gpu-memory-utilization
+      - "0.8"
+    expose:
+      # 仅在docker容器内开放8001端口
+      - "8001"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  api:
+    environment:
+      VLLM_BASE_URL: http://vllm:8001
+      VLLM_MODEL: minimind
+    depends_on:
+      - vllm
