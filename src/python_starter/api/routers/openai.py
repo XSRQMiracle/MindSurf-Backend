@@ -1,79 +1,63 @@
-"""OpenAI-compatible proxy endpoints backed by a vLLM server."""
+"""OpenAI-compatible inference endpoints."""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 
+from python_starter.api.dependencies import InferenceServiceDep
+from python_starter.inference.types import InferenceBackendUnavailableError
 from python_starter.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
 
 
-async def _buffer_response(upstream: httpx.Response) -> Response:
-    """Read and close a non-streaming upstream response."""
-    content = await upstream.aread()
-    await upstream.aclose()
-    return Response(
-        content=content,
-        status_code=upstream.status_code,
-        media_type=upstream.headers.get("content-type", "application/json"),
-    )
-
-
 @router.post("/chat/completions", response_model=None)
 async def chat_completions(
     request: Request,
     payload: dict[str, Any],
+    service: InferenceServiceDep,
 ) -> Response:
-    """Proxy OpenAI-compatible chat completions to the configured vLLM server."""
-    client: httpx.AsyncClient | None = getattr(request.app.state, "vllm_client", None)
-    if client is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="vLLM client is not initialized",
-        )
-
-    upstream_request = client.build_request(
-        "POST",
-        "/v1/chat/completions",
-        json=payload,
-    )
-    is_streaming = payload.get("stream") is True
-
+    """Handle OpenAI-compatible chat completions with the selected backend."""
     try:
-        upstream = await client.send(upstream_request, stream=is_streaming)
-    except httpx.RequestError as exc:
-        logger.warning("vllm_unavailable", error=str(exc))
+        backend_response = await service.chat_completions(payload)
+    except InferenceBackendUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="vLLM unavailable",
+            detail=str(exc),
         ) from exc
 
-    if upstream.status_code >= status.HTTP_400_BAD_REQUEST or not is_streaming:
-        return await _buffer_response(upstream)
+    if backend_response.body is not None:
+        return Response(
+            content=backend_response.body,
+            status_code=backend_response.status_code,
+            media_type=backend_response.content_type,
+        )
+
+    upstream_stream = backend_response.stream
+    if upstream_stream is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Inference backend returned an empty response",
+        )
 
     async def forward_stream() -> AsyncIterator[bytes]:
-        try:
-            async for chunk in upstream.aiter_bytes():
+        async with aclosing(upstream_stream):
+            async for chunk in upstream_stream:
                 if await request.is_disconnected():
                     break
                 yield chunk
-        except httpx.RequestError as exc:
-            logger.warning("vllm_stream_interrupted", error=str(exc))
-        finally:
-            await upstream.aclose()
 
     return StreamingResponse(
         forward_stream(),
-        status_code=upstream.status_code,
+        status_code=backend_response.status_code,
         headers={
-            "Content-Type": upstream.headers.get("content-type", "text/event-stream"),
+            "Content-Type": backend_response.content_type,
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },

@@ -5,14 +5,14 @@ Reference: src-go/cmd/server/main.go startup/shutdown logic.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import httpx
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from python_starter.api.routers import experiments, health, inference, openai
+from python_starter.inference.factory import create_inference_service
 from python_starter.infrastructure.config import Settings, get_settings
 from python_starter.infrastructure.database import DatabaseManager
 from python_starter.infrastructure.logging import configure_logging, get_logger
@@ -36,7 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(settings)
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Application lifespan: startup and shutdown hooks."""
         # Startup
         logger.info(
@@ -58,22 +58,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redis_ok = await redis_manager.connect()
         app.state.redis_manager = redis_manager
 
-        vllm_headers = (
-            {"Authorization": f"Bearer {settings.vllm_api_key}"}
-            if settings.vllm_api_key
-            else None
-        )
-        vllm_client = httpx.AsyncClient(
-            base_url=settings.vllm_base_url,
-            headers=vllm_headers,
-            timeout=httpx.Timeout(
-                connect=10.0,
-                read=None,
-                write=30.0,
-                pool=10.0,
-            ),
-        )
-        app.state.vllm_client = vllm_client
+        inference_service = await create_inference_service(settings)
+        app.state.inference_service = inference_service
+        app.state.settings = settings
 
         if not db_ok or not redis_ok:
             logger.warning(
@@ -87,7 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             # Shutdown
             logger.info("shutting_down_server")
-            await vllm_client.aclose()
+            await inference_service.aclose()
             await db_manager.disconnect()
             await redis_manager.disconnect()
 

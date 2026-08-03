@@ -11,6 +11,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from python_starter.inference.service import InferenceService
 from python_starter.infrastructure.config import Settings, get_settings
 from python_starter.infrastructure.database import DatabaseManager
 from python_starter.infrastructure.logging import get_logger
@@ -47,8 +48,17 @@ async def get_db_manager(request: Request) -> DatabaseManager:
     return db_manager
 
 
+async def get_inference_service(request: Request) -> InferenceService:
+    """Provide the configured inference service from application state."""
+    service: InferenceService | None = getattr(request.app.state, "inference_service", None)
+    if service is None:
+        raise RuntimeError("Inference service not available")
+    return service
+
+
 # Annotated dependency types for cleaner router signatures
 DBSession = Annotated[AsyncSession, Depends(get_db)]
 RedisDep = Annotated[RedisManager, Depends(get_redis)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 DBManagerDep = Annotated[DatabaseManager, Depends(get_db_manager)]
+InferenceServiceDep = Annotated[InferenceService, Depends(get_inference_service)]
