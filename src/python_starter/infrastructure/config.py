@@ -6,6 +6,7 @@ Reference: src-go/internal/config/config.go
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,9 +28,26 @@ class Settings(BaseSettings):
     app_version: str = Field(default="0.1.0", alias="APP_VERSION")
 
     # API Server
+    inference_backend: Literal["vllm", "pytorch"] = Field(
+        default="vllm", alias="INFERENCE_BACKEND"
+    )
     vllm_base_url: str = Field(default="http://localhost:8001", alias="VLLM_BASE_URL")
     vllm_model: str = Field(default="minimind", alias="VLLM_MODEL")
     vllm_api_key: str | None = Field(default=None, alias="VLLM_API_KEY")
+    pytorch_checkpoint_path: str = Field(
+        default="models/checkpoints/mindsurf-pretrain-80m-seed20260511/final_model.pt",
+        alias="PYTORCH_CHECKPOINT_PATH",
+    )
+    pytorch_tokenizer_path: str = Field(
+        default="models/tokenizers/minimind_tokenizer",
+        alias="PYTORCH_TOKENIZER_PATH",
+    )
+    pytorch_model_config_path: str | None = Field(
+        default="configs/model/minimind_80m.yaml",
+        alias="PYTORCH_MODEL_CONFIG_PATH",
+    )
+    pytorch_model_name: str = Field(default="minimind", alias="PYTORCH_MODEL_NAME")
+    pytorch_device: str = Field(default="auto", alias="PYTORCH_DEVICE")
     api_host: str = Field(default="0.0.0.0", alias="API_HOST")
     api_port: int = Field(default=8000, alias="API_PORT")
 
