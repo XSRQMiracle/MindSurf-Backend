@@ -37,6 +37,7 @@ services:
 
   api:
     environment:
+      INFERENCE_BACKEND: vllm
       VLLM_BASE_URL: http://vllm:8001
       VLLM_MODEL: minimind
     depends_on:
