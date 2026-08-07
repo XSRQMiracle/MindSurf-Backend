@@ -58,6 +58,9 @@ coverage.xml
 # =============================================================================
 /models/*
 !/models/.gitkeep
+!/models/mindsurf-omni/
+/models/mindsurf-omni/*
+!/models/mindsurf-omni/.gitkeep
 /data/*
 !/data/.gitkeep
 /data/raw/*
@@ -97,6 +100,9 @@ Thumbs.db
 secrets/
 *.key
 *.pem
+
+# Upstream model implementation and assets are pinned externally, not vendored.
+/vendor/minimind-o/
 
 # =============================================================================
 # Scripts used locally
