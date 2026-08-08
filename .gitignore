@@ -108,3 +108,4 @@ secrets/
 # Scripts used locally
 # =============================================================================
 scripts/easy_train.py
+.env.omni
