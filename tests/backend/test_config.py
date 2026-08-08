@@ -16,6 +16,7 @@ def test_backend_environment_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert settings.port == 9100
     assert settings.voice_ws_path == "/voice"
+    assert settings.handshake_timeout_ms == 3_000
 
 
 def test_voice_websocket_path_must_be_absolute() -> None:

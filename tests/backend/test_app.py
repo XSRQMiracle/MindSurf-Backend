@@ -25,6 +25,7 @@ def test_new_backend_starts_without_loading_a_model() -> None:
     assert app.state.settings is settings
     assert isinstance(app.state.omni_adapter, OmniAdapter)
     assert app.state.omni_adapter.available is False
+    assert any(getattr(route, "path", None) == "/v1/voice/ws" for route in app.routes)
 
 
 def test_legacy_application_remains_available() -> None:

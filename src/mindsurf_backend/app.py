@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from mindsurf_backend.config import AppSettings, get_settings
 from mindsurf_backend.omni import OmniAdapter
+from mindsurf_backend.voice.router import register_voice_protocol
 
 
 def create_app(
@@ -23,6 +24,7 @@ def create_app(
     )
     app.state.settings = resolved_settings
     app.state.omni_adapter = omni_adapter or OmniAdapter()
+    register_voice_protocol(app, resolved_settings)
     return app
 
 

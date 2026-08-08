@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +25,12 @@ class AppSettings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     voice_ws_path: str = "/v1/voice/ws"
+    handshake_timeout_ms: int = Field(default=3_000, gt=0)
+    heartbeat_interval_ms: int = Field(default=15_000, gt=0)
+    heartbeat_timeout_ms: int = Field(default=10_000, gt=0)
+    max_recording_ms: int = Field(default=60_000, gt=0)
+    max_json_bytes: int = Field(default=65_536, ge=1024, le=65_536)
+    max_binary_bytes: int = Field(default=65_536, ge=1024, le=65_536)
 
     @field_validator("voice_ws_path")
     @classmethod
