@@ -25,6 +25,12 @@ def test_new_backend_starts_without_loading_a_model() -> None:
     assert app.state.settings is settings
     assert isinstance(app.state.omni_adapter, OmniAdapter)
     assert app.state.omni_adapter.available is False
+    route_paths = {getattr(route, "path", None) for route in app.routes}
+    assert "/health/live" in route_paths
+    assert "/health/ready" in route_paths
+    assert "/v1/chat/completions" in route_paths
+    assert "/v1/audio/transcriptions" in route_paths
+    assert "/v1/audio/speech" in route_paths
     assert any(getattr(route, "path", None) == "/v1/voice/ws" for route in app.routes)
 
 

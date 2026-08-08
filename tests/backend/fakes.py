@@ -25,12 +25,14 @@ class FakeSpeechEngine(SpeechEngine):
         deltas: tuple[str, ...] = ("你好。", "世界"),
         speech_pcm: bytes = b"\x01\x00" * 240,
         path: str = "cascade",
+        unwired: tuple[str, ...] = (),
     ) -> None:
         self.transcript = transcript
         self.language = language
         self.deltas = deltas
         self.speech_pcm = speech_pcm
         self.path = path
+        self.unwired = unwired
         self.spoken_texts: list[str] = []
 
     def describe(self) -> EngineDescription:

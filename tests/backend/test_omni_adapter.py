@@ -48,3 +48,18 @@ def test_adapter_rejects_non_cascade_engine() -> None:
     assert adapter.available is False
     with pytest.raises(OmniNotConfiguredError, match="requires the cascade"):
         _ = adapter.engine
+
+
+def test_adapter_reports_and_requires_individual_stages() -> None:
+    engine = FakeSpeechEngine(unwired=("transcriber",))
+    adapter = OmniAdapter(engine)
+
+    assert adapter.ready is False
+    assert adapter.stage_status == {
+        "transcriber": False,
+        "generator": True,
+        "synthesiser": True,
+    }
+    assert adapter.require_stages("generator") is engine
+    with pytest.raises(OmniNotConfiguredError, match="transcriber"):
+        adapter.require_stages("transcriber")

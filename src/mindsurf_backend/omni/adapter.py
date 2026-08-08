@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Literal
 
 from mindsurf_omni.service.config import ConfigurationError, Settings
 from mindsurf_omni.service.engine import SpeechEngine
@@ -11,6 +12,10 @@ from mindsurf_omni.service.factory import build
 
 class OmniNotConfiguredError(RuntimeError):
     """Raised when application code requests an Omni engine before startup wiring."""
+
+
+OmniStage = Literal["transcriber", "generator", "synthesiser"]
+OMNI_STAGES: tuple[OmniStage, ...] = ("transcriber", "generator", "synthesiser")
 
 
 class OmniAdapter:
@@ -53,6 +58,16 @@ class OmniAdapter:
         return self._supports_stages("transcriber", "generator", "synthesiser")
 
     @property
+    def ready(self) -> bool:
+        """Return whether the complete cascade pipeline can serve requests."""
+        return self._supports_stages(*OMNI_STAGES)
+
+    @property
+    def stage_status(self) -> dict[OmniStage, bool]:
+        """Report readiness for each independently callable cascade stage."""
+        return {stage: self._supports_stages(stage) for stage in OMNI_STAGES}
+
+    @property
     def unavailable_reason(self) -> str:
         """Return an actionable reason when no compatible engine is attached."""
         return self._configuration_error or (
@@ -69,13 +84,17 @@ class OmniAdapter:
 
     def require(self, *, assistant: bool, audio: bool) -> SpeechEngine:
         """Return an engine whose stages cover the requested response mode."""
-        engine = self.engine
-        required = ["transcriber"]
+        required: list[OmniStage] = ["transcriber"]
         if assistant:
             required.append("generator")
         if audio:
             required.append("synthesiser")
-        missing = [stage for stage in required if stage in self._unwired_stages()]
+        return self.require_stages(*required)
+
+    def require_stages(self, *stages: OmniStage) -> SpeechEngine:
+        """Return an engine when the requested independent stages are wired."""
+        engine = self.engine
+        missing = [stage for stage in stages if stage in self._unwired_stages()]
         if missing:
             raise OmniNotConfiguredError(
                 "the configured Omni cascade cannot serve this request because these stages "
