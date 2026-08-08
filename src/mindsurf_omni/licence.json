@@ -1,0 +1,89 @@
+{
+  "assets": [
+    {
+      "commercial_use": false,
+      "inherited_from": "gongjy/minimind_dataset @ 74aad49f",
+      "licence": "CC-BY-NC-4.0",
+      "name": "text_base",
+      "note": "the MIT licence on MiniMind's code repository does not apply: weights inherit the licence of the data, not of the code that trained them. Re-checked 2026-07-26 and two things need saying. The corpus named here resolves on ModelScope, not Hugging Face -- an attribution that does not say which host is not resolvable, so the entry under attribution_required now names it. And the Hugging Face copy of the same corpus, jingyaogong/minimind_dataset, today declares apache-2.0 together with cc-by-nc-2.0, not 4.0. The pinned revision's own text could not be read to confirm which applied then. Non-commercial holds under either version, so the conclusion is untouched, but the exact version recorded here is now in doubt and should not be quoted as settled.",
+      "verified": true,
+      "what": "89,864,448 parameter Chinese-first language model"
+    },
+    {
+      "commercial_use": true,
+      "licence": "Apache-2.0",
+      "name": "minimind_o_code",
+      "verified": true
+    },
+    {
+      "commercial_use": null,
+      "licence": "declared apache-2.0 by the release card, but the same reasoning as text_base applies",
+      "licence_link": "https://huggingface.co/jingyaogong/minimind-3o",
+      "name": "upstream_talker_weights",
+      "note": "added 2026-07-26 because the graft made this a component rather than a benchmark. t2a_graft and everything downstream of it carry upstream's released Talker -- 20 tensors, 47.05M parameters, taken from sft_omni_768 by scripts/graft_talker.py, provenance in the sidecar. The card at huggingface.co/jingyaogong/minimind-3o says apache-2.0. This record does not take that at face value, for the reason already written under text_base: weights inherit the licence of the data. The sibling card jingyaogong/minimind-3 declares apache-2.0 while naming jingyaogong/minimind_dataset as its training data, and that dataset's own card declares apache-2.0 and cc-by-nc-2.0 together. So null: the declaration is on record, and it is contradicted by the corpus it names. The conclusion does not move either way -- our Thinker binds this checkpoint to CC-BY-NC-4.0 regardless.",
+      "verified": false,
+      "what": "upstream's released Talker, carried by every graft-derived checkpoint"
+    },
+    {
+      "commercial_use": null,
+      "licence": "declared apache-2.0 and gpl-3.0 (dataset card lists both, with no per-file mapping)",
+      "licence_link": "https://huggingface.co/datasets/jingyaogong/minimind-o_dataset",
+      "name": "minimind_o_data",
+      "note": "upstream sources checked 2026-07-24: VoiceAssistant-400K is Apache-2.0 and UltraChat-300K-SLAM-Omni is MIT. Card re-read 2026-07-26: it is no longer unstated, it declares apache-2.0 AND gpl-3.0 and says nothing about which governs which file. The repo holds the exact parquets this project trains on (sft_t2a.parquet 5,352,974,361 bytes, sft_a2a.parquet 5,754,147,166). Neither declared licence forbids commercial use, so this asset is not a candidate for the binding constraint -- but GPL-3.0 on a dataset is unexplained and would carry copyleft obligations if it is the one that governs the audio. Still unverified for a second reason: minimind-o synthesised multi-speaker audio with Qwen3-TTS, and which route was used is stated nowhere -- the open weights are Apache-2.0 (released 2026-01) but a hosted API's output terms are not, and the technical report (arXiv 2605.03937) does not mention the synthesis provenance at all. An uploader's declaration cannot relicense what went into it.",
+      "verified": false,
+      "what": "sft_t2a / sft_a2a, Mimi codes"
+    },
+    {
+      "commercial_use": null,
+      "licence": "FunASR Model Open Source License Agreement v1.1",
+      "licence_link": "https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE",
+      "name": "sensevoice_small",
+      "note": "read 2026-07-26, and it does not answer the question. The grant is broad -- use, copy, modify and share, with attribution kept and the model names retained -- but there is no commercial clause either way, and it states the software is provided for reference and learning purposes only. Two further terms matter to a product: the licensor may amend the agreement unilaterally with continued use counting as acceptance, and any breach terminates it automatically. So this stays null: null means nobody can say yes, which is the true state, and false would claim a finding nobody made. WARNING: the README shipped inside model/SenseVoiceSmall says Apache-2.0. That is wrong. The authoritative card (huggingface.co/FunAudioLLM/SenseVoiceSmall) carries license: other, license_name: model-license, pointing at the agreement above. A copy's claim about its own licence is not evidence.",
+      "verified": false,
+      "what": "frozen audio encoder, 234M parameters"
+    },
+    {
+      "commercial_use": true,
+      "licence": "CC-BY-4.0",
+      "licence_link": "https://creativecommons.org/licenses/by/4.0/",
+      "name": "mimi",
+      "note": "read 2026-07-26, two sources agreeing: the README shipped in model/mimi and the upstream card at huggingface.co/kyutai/mimi. Commercial use is permitted and attribution is mandatory, so this asset adds an obligation rather than a restriction. What ships is minimind-o's fp16 conversion, and which upstream revision it was converted from is recorded nowhere -- the revision pinned under attribution_required is the one whose terms were read, not a provenance claim about these bytes.",
+      "verified": true,
+      "what": "frozen speech codec, 96M parameters"
+    },
+    {
+      "commercial_use": true,
+      "licence": "Apache-2.0",
+      "licence_link": "https://www.apache.org/licenses/LICENSE-2.0",
+      "name": "campplus",
+      "note": "read 2026-07-26. The README shipped in model/campplus, the upstream card at huggingface.co/funasr/campplus and the 3D-Speaker project it came from all say Apache-2.0. Commercial use is permitted; the copyright and licence notices travel with any redistribution.",
+      "verified": true,
+      "what": "frozen speaker embedding"
+    },
+    {
+      "commercial_use": null,
+      "licence": "FunASR Model Open Source License Agreement v1.1",
+      "licence_link": "https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE",
+      "name": "emotion2vec_plus_large",
+      "note": "read 2026-08-01, before installing anything. The Hugging Face card declares license: other with license_name: model-license and license_link pointing at the FunASR repository -- which is the same agreement sensevoice_small resolves to, so the same null applies for the same reason. TRAP AVOIDED: the FunASR repository's top-level LICENSE file is MIT, and reading only that would have recorded this as commercially usable. MIT covers the code; the weights carry MODEL_LICENSE. This is the SenseVoice mistake in a new place, and the only reason it was caught is that the earlier one was written down. What matters for the use we intend: the agreement places no restriction on the model's outputs, so emotion labels it produces do not inherit it, and the annotator itself never enters the delivery package. Attribution is required for derivative works of the model -- we make none.",
+      "verified": false,
+      "what": "speech emotion recogniser, used only to LABEL our corpus; not shipped and not part of any deliverable"
+    }
+  ],
+  "attribution_required": [
+    "modelscope.cn/datasets/gongjy/minimind_dataset @ 74aad49fa4443e7ed640d44bc4e9c7d1fe71ada5",
+    "huggingface.co/kyutai/mimi @ 89091b3e466eb6a9d11e537bf26b144f194978f7"
+  ],
+  "conclusion": {
+    "binding_constraint": "text_base",
+    "commercial_use_permitted": false,
+    "reason": "the text base inherits CC-BY-NC-4.0 from its training data, and that restriction passes to every derivative including fine-tuned ones"
+  },
+  "how_to_change_the_conclusion": "replace the text base's training data with a corpus whose licence permits commercial use, and read the terms of the frozen components; loosening the statement without doing that would be a false claim",
+  "open_questions": [
+    "the training data's card declares apache-2.0 and gpl-3.0 with no per-file mapping, and leaves unstated whether its synthesised audio came from Qwen3-TTS open weights or a hosted API. Neither declared licence forbids commercial use, so this is an unresolved obligation rather than an unresolved permission",
+    "the audio encoder's terms have been read and do not resolve commercial use: broad grant, reference-and-learning-purposes wording, unilateral amendment. Settling it needs the licensor, not another reading -- and the copy shipped in the tree states a different licence than its own upstream does"
+  ],
+  "recorded_at": "2026-07-26",
+  "schema_version": 1
+}

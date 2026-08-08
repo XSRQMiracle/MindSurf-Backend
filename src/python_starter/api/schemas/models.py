@@ -40,7 +40,12 @@ class InferenceRequest(BaseModel):
     """Model inference request."""
 
     text: str = Field(..., min_length=1, description="Input text for inference")
-    max_length: int = Field(default=128, ge=1, le=2048, description="Maximum output length")
+    max_length: int = Field(
+        default=128,
+        ge=1,
+        le=2048,
+        description="Maximum number of new tokens",
+    )
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature")
     top_p: float = Field(default=0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
 

@@ -50,11 +50,21 @@ async def test_list_experiments(api_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_inference_placeholder(api_client: AsyncClient) -> None:
+async def test_inference_uses_configured_backend(api_client: AsyncClient) -> None:
     payload = {"text": "Hello world", "max_length": 32}
     response = await api_client.post("/inference", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert "text" in data
-    assert "input_tokens" in data
-    assert "output_tokens" in data
+    assert data["text"] == "Generated: Hello world"
+    assert data["input_tokens"] == 2
+    assert data["output_tokens"] == 3
+
+
+@pytest.mark.asyncio
+async def test_inference_models_uses_configured_backend(api_client: AsyncClient) -> None:
+    response = await api_client.get("/inference/models")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "models": [{"name": "test-model", "backend": "fake"}]
+    }

@@ -5,13 +5,14 @@ Reference: src-go/cmd/server/main.go startup/shutdown logic.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
-from python_starter.api.routers import experiments, health, inference
+from python_starter.api.routers import experiments, health, inference, openai
+from python_starter.inference.factory import create_inference_service
 from python_starter.infrastructure.config import Settings, get_settings
 from python_starter.infrastructure.database import DatabaseManager
 from python_starter.infrastructure.logging import configure_logging, get_logger
@@ -35,7 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(settings)
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Application lifespan: startup and shutdown hooks."""
         # Startup
         logger.info(
@@ -57,6 +58,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redis_ok = await redis_manager.connect()
         app.state.redis_manager = redis_manager
 
+        inference_service = await create_inference_service(settings)
+        app.state.inference_service = inference_service
+        app.state.settings = settings
+
         if not db_ok or not redis_ok:
             logger.warning(
                 "server_degraded",
@@ -64,12 +69,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 redis_ok=redis_ok,
             )
 
-        yield
-
-        # Shutdown
-        logger.info("shutting_down_server")
-        await db_manager.disconnect()
-        await redis_manager.disconnect()
+        try:
+            yield
+        finally:
+            # Shutdown
+            logger.info("shutting_down_server")
+            await inference_service.aclose()
+            await db_manager.disconnect()
+            await redis_manager.disconnect()
 
     app = FastAPI(
         title=settings.app_name,
@@ -84,10 +91,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router, prefix="/health", tags=["health"])
     app.include_router(inference.router, prefix="/inference", tags=["inference"])
     app.include_router(experiments.router, prefix="/experiments", tags=["experiments"])
+    app.include_router(openai.router, prefix="/v1", tags=["openai"])
 
     # Global exception handler
     @app.exception_handler(Exception)
-    async def global_exception_handler(request, exc):
+    async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.error("unhandled_exception", error=str(exc), path=request.url.path)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

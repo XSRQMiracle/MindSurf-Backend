@@ -1,0 +1,163 @@
+"""The fallback path: transcribe, think, speak -- three models in a row.
+
+Slower in principle than sending audio tokens straight through, and it exists
+anyway. Whether a ~140M model can speak Chinese well enough to ship is an open
+question, while this arrangement is already known to work: a sister project
+measured P95 1.93 s to first audio with these same components.
+
+The latency here is not dominated by the models. It is dominated by *when*
+synthesis starts. Waiting for a complete reply before speaking spends the whole
+generation time before the listener hears anything; starting at the first
+clause boundary spends only the time to produce that clause. That is the
+single largest lever in the budget, so it is the thing this module is built
+around.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
+
+from mindsurf_omni.contract import ComponentInfo, TokenSpec
+from mindsurf_omni.service.engine import (
+    EngineDescription,
+    GenerationSettings,
+    SpeechChunk,
+    SpeechEngine,
+    split_first_utterance,
+)
+
+# Callables rather than concrete models, so the pieces can be swapped -- local
+# CosyVoice2, a hosted endpoint, or a stub in a test -- without this logic
+# knowing which.
+Transcriber = Callable[[bytes, int], Awaitable[tuple[str, str | None]]]
+TextGenerator = Callable[[list[dict[str, str]], GenerationSettings], AsyncIterator[str]]
+Synthesiser = Callable[[str, GenerationSettings], Awaitable[bytes]]
+# The same job, handed over as it is produced. Optional because only a local
+# synthesiser can do it: a hosted one pays a round trip that cannot be divided.
+StreamingSynthesiser = Callable[[str, GenerationSettings], AsyncIterator[bytes]]
+
+
+@dataclass(slots=True)
+class CascadeTimings:
+    """Where the time went, per turn.
+
+    Recorded because the budget is a system property: shaving the model alone
+    rarely moves the number the user feels.
+    """
+
+    transcribe_ms: float = 0.0
+    first_clause_ms: float = 0.0
+    first_synthesis_ms: float = 0.0
+    time_to_first_audio_ms: float = 0.0
+
+
+class CascadeEngine(SpeechEngine):
+    def __init__(
+        self,
+        transcriber: Transcriber,
+        generator: TextGenerator,
+        synthesiser: Synthesiser,
+        components: list[ComponentInfo],
+        token_spec: TokenSpec,
+        unwired: tuple[str, ...] = (),
+        stream_synthesiser: StreamingSynthesiser | None = None,
+    ) -> None:
+        self._transcribe = transcriber
+        self._generate = generator
+        self._synthesise = synthesiser
+        # Absent is the ordinary case, not a degraded one: assembly passes this
+        # only when the wired synthesiser produces audio incrementally.
+        self._stream_synthesise = stream_synthesiser
+        self._components = components
+        self._token_spec = token_spec
+        # Which of the three stages will refuse if called. Assembly knows this
+        # and the health check cannot work it out by looking, so it is carried
+        # rather than probed -- an engine that answers "ready" while a stage
+        # raises is worse than no health check, because a backend routes on it.
+        self.unwired = unwired
+        self.last_timings = CascadeTimings()
+
+    def describe(self) -> EngineDescription:
+        return EngineDescription(path="cascade", components=self._components)
+
+    def token_spec(self) -> TokenSpec:
+        return self._token_spec
+
+    async def transcribe(self, pcm: bytes, sample_rate: int) -> tuple[str, str | None]:
+        return await self._transcribe(pcm, sample_rate)
+
+    def complete(
+        self, messages: list[dict[str, str]], settings: GenerationSettings
+    ) -> AsyncIterator[str]:
+        return self._generate(messages, settings)
+
+    async def speak(
+        self, text: str, settings: GenerationSettings
+    ) -> AsyncIterator[SpeechChunk]:
+        pcm = await self._synthesise(text, settings)
+        yield SpeechChunk(pcm=pcm, text=text, is_final=True)
+
+    async def respond(
+        self, pcm: bytes, sample_rate: int, settings: GenerationSettings
+    ) -> AsyncIterator[SpeechChunk]:
+        started = time.perf_counter()
+        timings = CascadeTimings()
+
+        transcript, _ = await self._transcribe(pcm, sample_rate)
+        timings.transcribe_ms = (time.perf_counter() - started) * 1000
+
+        messages = [{"role": "user", "content": transcript}]
+        pending = ""
+        spoken_anything = False
+
+        async for delta in self._generate(messages, settings):
+            pending += delta
+            clause = split_first_utterance(pending)
+            if clause is None:
+                continue
+
+            if not spoken_anything:
+                timings.first_clause_ms = (time.perf_counter() - started) * 1000
+            synthesis_started = time.perf_counter()
+            pending = pending[len(clause) :]
+
+            if self._stream_synthesise is None:
+                audio = await self._synthesise(clause, settings)
+                if not spoken_anything:
+                    timings.first_synthesis_ms = (time.perf_counter() - synthesis_started) * 1000
+                    timings.time_to_first_audio_ms = (time.perf_counter() - started) * 1000
+                    spoken_anything = True
+                yield SpeechChunk(pcm=audio, text=clause)
+                continue
+
+            # The clause's text rides on its first piece only. Repeating it on
+            # every piece would make a client render the same sentence several
+            # times, and dropping it entirely would lose the alignment between
+            # what was said and what was played.
+            said = False
+            async for piece in self._stream_synthesise(clause, settings):
+                if not spoken_anything:
+                    timings.first_synthesis_ms = (time.perf_counter() - synthesis_started) * 1000
+                    timings.time_to_first_audio_ms = (time.perf_counter() - started) * 1000
+                    spoken_anything = True
+                yield SpeechChunk(pcm=piece, text=None if said else clause)
+                said = True
+            if not said:
+                # A clause that produced nothing still happened, and a client
+                # tracking text against audio would otherwise never see it.
+                yield SpeechChunk(pcm=b"", text=clause)
+
+        # Whatever is left has no sentence end -- say it anyway rather than
+        # dropping the tail of the reply.
+        remainder = pending.strip()
+        if remainder:
+            audio = await self._synthesise(remainder, settings)
+            if not spoken_anything:
+                timings.time_to_first_audio_ms = (time.perf_counter() - started) * 1000
+            yield SpeechChunk(pcm=audio, text=remainder, is_final=True)
+        elif spoken_anything:
+            yield SpeechChunk(pcm=b"", is_final=True)
+
+        self.last_timings = timings

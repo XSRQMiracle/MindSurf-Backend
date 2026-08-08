@@ -1,16 +1,21 @@
-"""Model inference endpoints.
-
-Provides REST API for running inference on trained models.
-"""
+"""Compatibility endpoints for plain-text model inference."""
 
 from __future__ import annotations
 
-import time
-
 from fastapi import APIRouter, HTTPException, status
 
-from python_starter.api.dependencies import SettingsDep
-from python_starter.api.schemas.models import InferenceRequest, InferenceResponse
+from python_starter.api.dependencies import InferenceServiceDep
+from python_starter.api.schemas.models import (
+    InferenceRequest as APIInferenceRequest,
+)
+from python_starter.api.schemas.models import (
+    InferenceResponse,
+)
+from python_starter.inference.types import (
+    InferenceBackendUnavailableError,
+    InferenceRequest,
+    InferenceRequestError,
+)
 from python_starter.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
@@ -19,59 +24,57 @@ router = APIRouter()
 
 @router.post("", response_model=InferenceResponse)
 async def run_inference(
-    request: InferenceRequest,
-    settings: SettingsDep,
+    request: APIInferenceRequest,
+    service: InferenceServiceDep,
 ) -> InferenceResponse:
-    """Run model inference on input text.
-
-    This is a placeholder implementation. In a real setup:
-    1. Load the model from app.state or MLflow registry
-    2. Tokenize input
-    3. Run forward pass
-    4. Decode output
-
-    For now, returns a mock response to demonstrate the API contract.
-    """
+    """Generate text through the configured inference backend."""
     logger.info(
         "inference_request",
+        backend=service.backend_name,
         input_length=len(request.text),
         max_length=request.max_length,
         temperature=request.temperature,
     )
 
-    # TODO: Replace with actual model loading and inference
-    # model = request.app.state.model  # or load from MLflow
-    start = time.perf_counter()
-
-    # Placeholder: echo the input with a mock response
-    mock_output = f"[Model output for: {request.text[:50]}...]"
-    elapsed_ms = (time.perf_counter() - start) * 1000
+    try:
+        result = await service.generate(
+            InferenceRequest(
+                prompt=request.text,
+                max_tokens=request.max_length,
+                temperature=request.temperature,
+                top_p=request.top_p,
+            )
+        )
+    except InferenceBackendUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except InferenceRequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     logger.info(
         "inference_complete",
-        output_length=len(mock_output),
-        elapsed_ms=elapsed_ms,
+        backend=result.backend_name,
+        output_length=len(result.generated_text),
+        elapsed_ms=result.generation_time * 1000,
     )
-
     return InferenceResponse(
-        text=mock_output,
-        input_tokens=len(request.text.split()),
-        output_tokens=len(mock_output.split()),
-        generation_time_ms=elapsed_ms,
+        text=result.generated_text,
+        input_tokens=result.input_tokens,
+        output_tokens=result.generated_tokens,
+        generation_time_ms=result.generation_time * 1000,
     )
 
 
 @router.get("/models")
-async def list_available_models(settings: SettingsDep) -> dict:
-    """List models available for inference."""
-    # TODO: Query MLflow model registry or local model directory
+async def list_available_models(service: InferenceServiceDep) -> dict[str, object]:
+    """Return the model served by the configured inference backend."""
     return {
         "models": [
             {
-                "name": "minimind",
-                "version": "v1",
-                "path": "models/minimind/latest",
-                "description": "Default minimind model",
+                "name": service.model_name,
+                "backend": service.backend_name,
             }
         ]
     }
