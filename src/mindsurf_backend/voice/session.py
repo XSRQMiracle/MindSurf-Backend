@@ -1,4 +1,4 @@
-"""WebSocket session handling for the MindSurf Voice Protocol handshake."""
+"""WebSocket session and request handling for MindSurf Voice Protocol version 1."""
 
 from __future__ import annotations
 
@@ -6,11 +6,19 @@ import asyncio
 import contextlib
 import time
 import uuid
+from dataclasses import dataclass
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from mindsurf_backend.config import AppSettings
 from mindsurf_backend.voice.audio import decode_audio_frame
+from mindsurf_backend.voice.lifecycle import (
+    ActiveVoiceRequest,
+    CancelReason,
+    RequestState,
+    validate_request_cancel,
+    validate_request_start,
+)
 from mindsurf_backend.voice.protocol import (
     CloseCode,
     ControlEnvelope,
@@ -25,6 +33,12 @@ from mindsurf_backend.voice.protocol import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _TerminalRequest:
+    state: RequestState
+    cancel_reason: CancelReason | None = None
+
+
 class VoiceProtocolSession:
     """Own one negotiated WebSocket connection and its heartbeat state."""
 
@@ -37,6 +51,8 @@ class VoiceProtocolSession:
         self._last_activity = time.monotonic()
         self._pending_pong: str | None = None
         self._pong_received = asyncio.Event()
+        self._active_request: ActiveVoiceRequest | None = None
+        self._terminal_requests: dict[uuid.UUID, _TerminalRequest] = {}
 
     async def run(self) -> None:
         """Perform the handshake and serve session-level protocol messages."""
@@ -46,6 +62,7 @@ class VoiceProtocolSession:
         try:
             await self._receive_loop()
         finally:
+            await self._release_active_request()
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
@@ -131,31 +148,121 @@ class VoiceProtocolSession:
         if envelope.event_id in self._event_ids:
             return
         self._remember_event(envelope)
-        if envelope.type == "session.pong":
-            await self._handle_pong(envelope)
-            return
-        if envelope.type == "error":
-            return
-        unsupported = ProtocolError(
-            ErrorCode.UNSUPPORTED_MESSAGE_TYPE,
-            f"message type {envelope.type!r} is not implemented yet",
-            stage="protocol",
-        )
-        await self._send(create_error_envelope(unsupported, envelope.request_id))
+        try:
+            if envelope.type == "session.pong":
+                await self._handle_pong(envelope)
+                return
+            if envelope.type == "request.start":
+                await self._handle_request_start(envelope)
+                return
+            if envelope.type == "input.commit":
+                await self._handle_input_commit(envelope)
+                return
+            if envelope.type == "request.cancel":
+                await self._handle_request_cancel(envelope)
+                return
+            if envelope.type == "error":
+                return
+            raise ProtocolError(
+                ErrorCode.UNSUPPORTED_MESSAGE_TYPE,
+                f"message type {envelope.type!r} is not implemented",
+                stage="protocol",
+            )
+        except ProtocolError as violation:
+            await self._handle_request_violation(violation, envelope.request_id)
 
     async def _handle_binary(self, data: bytes) -> None:
         self._last_activity = time.monotonic()
         try:
             frame = decode_audio_frame(data, max_bytes=self._settings.max_binary_bytes)
         except ProtocolError as violation:
-            await self._send(create_error_envelope(violation))
+            request_id = (
+                self._active_request.request_id if self._active_request is not None else None
+            )
+            await self._handle_request_violation(violation, request_id)
             return
-        not_found = ProtocolError(
-            ErrorCode.REQUEST_NOT_FOUND,
-            "audio cannot be accepted before request.start",
-            stage="input",
+        if frame.request_id in self._terminal_requests:
+            return
+        request = self._active_request
+        if request is None or frame.request_id != request.request_id:
+            not_found = ProtocolError(
+                ErrorCode.REQUEST_NOT_FOUND,
+                "audio does not belong to the active request",
+                stage="input",
+            )
+            await self._send(create_error_envelope(not_found, frame.request_id))
+            return
+        try:
+            request.append_audio(data)
+        except ProtocolError as violation:
+            await self._handle_request_violation(violation, request.request_id)
+
+    async def _handle_request_start(self, envelope: ControlEnvelope) -> None:
+        request_id = self._require_request_id(envelope)
+        if request_id in self._terminal_requests:
+            raise ProtocolError(
+                ErrorCode.REQUEST_STATE_ERROR,
+                "request ID has already reached a terminal state and cannot be reused",
+                stage="input",
+                fatal=True,
+            )
+        if self._active_request is not None:
+            raise ProtocolError(
+                ErrorCode.REQUEST_ALREADY_ACTIVE,
+                "the connection already has an active request",
+                stage="input",
+                fatal=True,
+            )
+        payload = validate_request_start(envelope.payload)
+        request = ActiveVoiceRequest(
+            request_id,
+            payload,
+            max_recording_ms=self._settings.max_recording_ms,
         )
-        await self._send(create_error_envelope(not_found, frame.request_id))
+        self._active_request = request
+        await self._send(
+            create_envelope("request.accepted", request_id, request.accepted_payload())
+        )
+        request.begin_recording()
+
+    async def _handle_input_commit(self, envelope: ControlEnvelope) -> None:
+        request_id = self._require_request_id(envelope)
+        if request_id in self._terminal_requests:
+            return
+        request = self._require_active_request(request_id)
+        request.commit_input(envelope.payload)
+        await self._send(
+            create_envelope(
+                "input.committed",
+                request_id,
+                {"accepted_duration_ms": request.input_audio.duration_ms},
+            )
+        )
+
+    async def _handle_request_cancel(self, envelope: ControlEnvelope) -> None:
+        request_id = self._require_request_id(envelope)
+        payload = validate_request_cancel(envelope.payload)
+        terminal = self._terminal_requests.get(request_id)
+        if terminal is not None:
+            if terminal.state is RequestState.CANCELLED and terminal.cancel_reason is not None:
+                await self._send(
+                    create_envelope(
+                        "request.cancelled",
+                        request_id,
+                        {"reason": terminal.cancel_reason},
+                    )
+                )
+            return
+        request = self._require_active_request(request_id)
+        await request.cancel()
+        self._remember_terminal(
+            request_id,
+            _TerminalRequest(RequestState.CANCELLED, payload.reason),
+        )
+        self._active_request = None
+        await self._send(
+            create_envelope("request.cancelled", request_id, {"reason": payload.reason})
+        )
 
     async def _handle_pong(self, envelope: ControlEnvelope) -> None:
         nonce = envelope.payload.get("nonce")
@@ -200,6 +307,21 @@ class VoiceProtocolSession:
         if violation.close_code is not None:
             await self._close(violation.close_code, violation.code.value)
 
+    async def _handle_request_violation(
+        self,
+        violation: ProtocolError,
+        request_id: uuid.UUID | None,
+    ) -> None:
+        await self._send(create_error_envelope(violation, request_id))
+        if violation.fatal and request_id is not None:
+            request = self._active_request
+            if request is not None and request.request_id == request_id:
+                await request.fail()
+                self._active_request = None
+            self._remember_terminal(request_id, _TerminalRequest(RequestState.FAILED))
+        if violation.close_code is not None:
+            await self._close(violation.close_code, violation.code.value)
+
     async def _send(self, envelope: ControlEnvelope) -> None:
         if self._closed:
             return
@@ -212,6 +334,41 @@ class VoiceProtocolSession:
         self._closed = True
         with contextlib.suppress(RuntimeError):
             await self._websocket.close(code=int(code), reason=reason[:123])
+
+    async def _release_active_request(self) -> None:
+        request = self._active_request
+        self._active_request = None
+        if request is not None:
+            await request.cancel()
+
+    def _require_request_id(self, envelope: ControlEnvelope) -> uuid.UUID:
+        if envelope.request_id is None:
+            raise ProtocolError(
+                ErrorCode.INVALID_MESSAGE,
+                f"{envelope.type} must carry a request ID",
+                stage="input",
+            )
+        return envelope.request_id
+
+    def _require_active_request(self, request_id: uuid.UUID) -> ActiveVoiceRequest:
+        request = self._active_request
+        if request is None or request.request_id != request_id:
+            raise ProtocolError(
+                ErrorCode.REQUEST_NOT_FOUND,
+                "request ID does not match the active request",
+                stage="input",
+            )
+        return request
+
+    def _remember_terminal(
+        self,
+        request_id: uuid.UUID,
+        terminal: _TerminalRequest,
+    ) -> None:
+        self._terminal_requests[request_id] = terminal
+        if len(self._terminal_requests) > 1024:
+            oldest_request_id = next(iter(self._terminal_requests))
+            del self._terminal_requests[oldest_request_id]
 
     def _remember_event(self, envelope: ControlEnvelope) -> None:
         self._event_ids.add(envelope.event_id)

@@ -292,7 +292,7 @@ def create_server_hello_payload(
             "streaming_asr": False,
             "streaming_text": False,
             "streaming_audio": False,
-            "cancellation": False,
+            "cancellation": True,
         },
         "inference_options": {
             "defaults": {
