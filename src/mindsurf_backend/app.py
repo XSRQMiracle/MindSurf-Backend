@@ -23,8 +23,8 @@ def create_app(
         redoc_url=None if resolved_settings.is_production else "/redoc",
     )
     app.state.settings = resolved_settings
-    app.state.omni_adapter = omni_adapter or OmniAdapter()
-    register_voice_protocol(app, resolved_settings)
+    app.state.omni_adapter = omni_adapter or OmniAdapter.from_environment()
+    register_voice_protocol(app, resolved_settings, app.state.omni_adapter)
     return app
 
 

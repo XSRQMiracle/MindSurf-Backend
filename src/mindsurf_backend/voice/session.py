@@ -7,11 +7,14 @@ import contextlib
 import time
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from mindsurf_backend.config import AppSettings
+from mindsurf_backend.omni import OmniAdapter, OmniNotConfiguredError
 from mindsurf_backend.voice.audio import decode_audio_frame
+from mindsurf_backend.voice.inference import OmniRequestRunner
 from mindsurf_backend.voice.lifecycle import (
     ActiveVoiceRequest,
     CancelReason,
@@ -31,6 +34,7 @@ from mindsurf_backend.voice.protocol import (
     parse_control_message,
     validate_client_hello,
 )
+from mindsurf_omni.service.engine import SpeechEngine
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,9 +46,15 @@ class _TerminalRequest:
 class VoiceProtocolSession:
     """Own one negotiated WebSocket connection and its heartbeat state."""
 
-    def __init__(self, websocket: WebSocket, settings: AppSettings) -> None:
+    def __init__(
+        self,
+        websocket: WebSocket,
+        settings: AppSettings,
+        omni_adapter: OmniAdapter,
+    ) -> None:
         self._websocket = websocket
         self._settings = settings
+        self._omni_adapter = omni_adapter
         self._send_lock = asyncio.Lock()
         self._closed = False
         self._event_ids: set[uuid.UUID] = set()
@@ -52,6 +62,7 @@ class VoiceProtocolSession:
         self._pending_pong: str | None = None
         self._pong_received = asyncio.Event()
         self._active_request: ActiveVoiceRequest | None = None
+        self._active_engine: SpeechEngine | None = None
         self._terminal_requests: dict[uuid.UUID, _TerminalRequest] = {}
 
     async def run(self) -> None:
@@ -115,6 +126,8 @@ class VoiceProtocolSession:
                 max_recording_ms=self._settings.max_recording_ms,
                 max_json_bytes=self._settings.max_json_bytes,
                 max_binary_bytes=self._settings.max_binary_bytes,
+                streaming_text=self._omni_adapter.streaming_text_available,
+                streaming_audio=self._omni_adapter.streaming_audio_available,
             )
             await self._send(create_envelope("server.hello", None, payload))
             return True
@@ -214,12 +227,25 @@ class VoiceProtocolSession:
                 fatal=True,
             )
         payload = validate_request_start(envelope.payload)
+        try:
+            engine = self._omni_adapter.require(
+                assistant=payload.mode == "assistant",
+                audio=payload.response.audio,
+            )
+        except OmniNotConfiguredError as error:
+            raise ProtocolError(
+                ErrorCode.MODEL_UNAVAILABLE,
+                str(error),
+                stage="protocol",
+                fatal=True,
+            ) from error
         request = ActiveVoiceRequest(
             request_id,
             payload,
             max_recording_ms=self._settings.max_recording_ms,
         )
         self._active_request = request
+        self._active_engine = engine
         await self._send(
             create_envelope("request.accepted", request_id, request.accepted_payload())
         )
@@ -238,6 +264,19 @@ class VoiceProtocolSession:
                 {"accepted_duration_ms": request.input_audio.duration_ms},
             )
         )
+        engine = self._active_engine
+        if engine is None:
+            raise ProtocolError(
+                ErrorCode.MODEL_UNAVAILABLE,
+                self._omni_adapter.unavailable_reason,
+                stage="protocol",
+                fatal=True,
+            )
+        task = asyncio.create_task(
+            self._run_inference(request, engine),
+            name=f"voice-inference-{request_id}",
+        )
+        request.attach_generation_task(task)
 
     async def _handle_request_cancel(self, envelope: ControlEnvelope) -> None:
         request_id = self._require_request_id(envelope)
@@ -254,12 +293,15 @@ class VoiceProtocolSession:
                 )
             return
         request = self._require_active_request(request_id)
+        if request.is_terminal:
+            return
         await request.cancel()
         self._remember_terminal(
             request_id,
             _TerminalRequest(RequestState.CANCELLED, payload.reason),
         )
         self._active_request = None
+        self._active_engine = None
         await self._send(
             create_envelope("request.cancelled", request_id, {"reason": payload.reason})
         )
@@ -318,7 +360,10 @@ class VoiceProtocolSession:
             if request is not None and request.request_id == request_id:
                 await request.fail()
                 self._active_request = None
-            self._remember_terminal(request_id, _TerminalRequest(RequestState.FAILED))
+                self._active_engine = None
+                self._remember_terminal(request_id, _TerminalRequest(RequestState.FAILED))
+            elif request_id not in self._terminal_requests:
+                self._remember_terminal(request_id, _TerminalRequest(RequestState.FAILED))
         if violation.close_code is not None:
             await self._close(violation.close_code, violation.code.value)
 
@@ -327,6 +372,66 @@ class VoiceProtocolSession:
             return
         async with self._send_lock:
             await self._websocket.send_json(envelope_json(envelope))
+
+    async def _send_control(
+        self,
+        message_type: str,
+        request_id: uuid.UUID,
+        payload: dict[str, Any],
+    ) -> None:
+        await self._send(create_envelope(message_type, request_id, payload))
+
+    async def _send_binary(self, data: bytes) -> None:
+        if self._closed:
+            return
+        async with self._send_lock:
+            await self._websocket.send_bytes(data)
+
+    async def _send_inference_error(
+        self,
+        violation: ProtocolError,
+        request_id: uuid.UUID,
+    ) -> None:
+        await self._send(create_error_envelope(violation, request_id))
+
+    async def _run_inference(
+        self,
+        request: ActiveVoiceRequest,
+        engine: SpeechEngine,
+    ) -> None:
+        runner = OmniRequestRunner(
+            engine,
+            request,
+            send_control=self._send_control,
+            send_binary=self._send_binary,
+            send_error=self._send_inference_error,
+            max_binary_bytes=self._settings.max_binary_bytes,
+        )
+        try:
+            done_payload = await runner.run()
+        except asyncio.CancelledError:
+            raise
+        except ProtocolError as violation:
+            await self._handle_request_violation(violation, request.request_id)
+            return
+        except Exception:
+            internal_violation = ProtocolError(
+                ErrorCode.INTERNAL_ERROR,
+                "Omni inference failed unexpectedly",
+                stage="protocol",
+                fatal=True,
+            )
+            await self._handle_request_violation(internal_violation, request.request_id)
+            return
+
+        if self._active_request is not request or request.state is not RequestState.GENERATING:
+            return
+        request.mark_done()
+        self._active_request = None
+        self._active_engine = None
+        self._remember_terminal(request.request_id, _TerminalRequest(RequestState.DONE))
+        await request.close_generation()
+        await self._send_control("request.done", request.request_id, done_payload)
 
     async def _close(self, code: CloseCode, reason: str) -> None:
         if self._closed:
@@ -338,6 +443,7 @@ class VoiceProtocolSession:
     async def _release_active_request(self) -> None:
         request = self._active_request
         self._active_request = None
+        self._active_engine = None
         if request is not None:
             await request.cancel()
 

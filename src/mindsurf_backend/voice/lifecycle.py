@@ -196,7 +196,7 @@ class ActiveVoiceRequest:
         self.payload = payload
         self.state = RequestState.ACCEPTED
         self.input_audio = InputAudioStream(request_id, max_recording_ms=max_recording_ms)
-        self._generation: AsyncIterator[Any] | None = None
+        self._generations: list[AsyncIterator[Any]] = []
         self._generation_task: asyncio.Task[None] | None = None
 
     @property
@@ -223,9 +223,13 @@ class ActiveVoiceRequest:
     def attach_generation(self, generation: AsyncIterator[Any]) -> None:
         """Attach the Omni iterator that must be closed on termination."""
         self._require(RequestState.GENERATING)
-        if self._generation is not None:
+        if any(item is generation for item in self._generations):
             raise RuntimeError("generation is already attached")
-        self._generation = generation
+        self._generations.append(generation)
+
+    def detach_generation(self, generation: AsyncIterator[Any]) -> None:
+        """Forget a fully consumed iterator without disturbing a replacement."""
+        self._generations = [item for item in self._generations if item is not generation]
 
     def attach_generation_task(self, task: asyncio.Task[None]) -> None:
         """Attach the task consuming the Omni iterator."""
@@ -236,8 +240,12 @@ class ActiveVoiceRequest:
 
     async def complete(self) -> None:
         """Move a fully generated request into its success terminal state."""
-        self._transition(RequestState.GENERATING, RequestState.DONE)
+        self.mark_done()
         await self.close_generation()
+
+    def mark_done(self) -> None:
+        """Claim successful completion before asynchronous cleanup begins."""
+        self._transition(RequestState.GENERATING, RequestState.DONE)
 
     async def cancel(self) -> None:
         """Stop live generation and enter the cancellation terminal state."""
@@ -260,12 +268,13 @@ class ActiveVoiceRequest:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        generation = self._generation
-        self._generation = None
-        close = getattr(generation, "aclose", None)
-        if close is not None:
-            with contextlib.suppress(RuntimeError):
-                await close()
+        generations = self._generations
+        self._generations = []
+        for generation in reversed(generations):
+            close = getattr(generation, "aclose", None)
+            if close is not None:
+                with contextlib.suppress(RuntimeError):
+                    await close()
 
     def accepted_payload(self) -> dict[str, Any]:
         """Return the negotiated request.accepted payload without conversation state."""

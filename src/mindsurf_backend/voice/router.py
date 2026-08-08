@@ -5,11 +5,16 @@ from __future__ import annotations
 from fastapi import FastAPI, WebSocket
 
 from mindsurf_backend.config import AppSettings
+from mindsurf_backend.omni import OmniAdapter
 from mindsurf_backend.voice.protocol import VOICE_SUBPROTOCOL, CloseCode
 from mindsurf_backend.voice.session import VoiceProtocolSession
 
 
-def register_voice_protocol(app: FastAPI, settings: AppSettings) -> None:
+def register_voice_protocol(
+    app: FastAPI,
+    settings: AppSettings,
+    omni_adapter: OmniAdapter,
+) -> None:
     """Register the configured Voice WebSocket endpoint on an application."""
 
     async def voice_websocket(websocket: WebSocket) -> None:
@@ -19,7 +24,7 @@ def register_voice_protocol(app: FastAPI, settings: AppSettings) -> None:
             await websocket.close(code=int(CloseCode.PROTOCOL_ERROR), reason="subprotocol required")
             return
         await websocket.accept(subprotocol=VOICE_SUBPROTOCOL)
-        await VoiceProtocolSession(websocket, settings).run()
+        await VoiceProtocolSession(websocket, settings, omni_adapter).run()
 
     app.add_api_websocket_route(
         settings.voice_ws_path,

@@ -59,6 +59,11 @@ class ErrorCode(StrEnum):
     AUDIO_COMMIT_MISMATCH = "audio_commit_mismatch"
     AUDIO_TOO_SHORT = "audio_too_short"
     AUDIO_TOO_LONG = "audio_too_long"
+    ASR_EMPTY = "asr_empty"
+    ASR_FAILED = "asr_failed"
+    LLM_FAILED = "llm_failed"
+    TTS_FAILED = "tts_failed"
+    MODEL_UNAVAILABLE = "model_unavailable"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -277,6 +282,8 @@ def create_server_hello_payload(
     max_recording_ms: int = MAX_RECORDING_MS,
     max_json_bytes: int = MAX_JSON_BYTES,
     max_binary_bytes: int = MAX_BINARY_BYTES,
+    streaming_text: bool = False,
+    streaming_audio: bool = False,
 ) -> dict[str, Any]:
     """Return the protocol capabilities currently implemented by the backend."""
     return {
@@ -290,8 +297,8 @@ def create_server_hello_payload(
         },
         "features": {
             "streaming_asr": False,
-            "streaming_text": False,
-            "streaming_audio": False,
+            "streaming_text": streaming_text,
+            "streaming_audio": streaming_audio,
             "cancellation": True,
         },
         "inference_options": {

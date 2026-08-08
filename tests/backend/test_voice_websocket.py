@@ -5,14 +5,17 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
 from mindsurf_backend.app import create_app
 from mindsurf_backend.config import AppSettings
+from mindsurf_backend.omni import OmniAdapter
 from mindsurf_backend.voice.audio import AudioFrame, AudioKind, encode_audio_frame
 from mindsurf_backend.voice.protocol import VOICE_SUBPROTOCOL
+from tests.backend.fakes import FakeSpeechEngine
 
 
 def test_websocket_negotiates_subprotocol_and_server_hello() -> None:
@@ -86,7 +89,7 @@ def test_websocket_closes_when_subprotocol_is_missing() -> None:
 
 
 def test_websocket_accepts_audio_and_commits_input() -> None:
-    app = create_app(AppSettings(_env_file=None))
+    app = _configured_app()
 
     with (
         TestClient(app) as client,
@@ -121,7 +124,7 @@ def test_websocket_accepts_audio_and_commits_input() -> None:
 
 
 def test_websocket_rejects_parallel_request_without_stopping_active_request() -> None:
-    app = create_app(AppSettings(_env_file=None))
+    app = _configured_app()
 
     with (
         TestClient(app) as client,
@@ -151,7 +154,7 @@ def test_websocket_rejects_parallel_request_without_stopping_active_request() ->
 
 
 def test_websocket_cancel_is_idempotent_and_allows_next_request() -> None:
-    app = create_app(AppSettings(_env_file=None))
+    app = _configured_app()
 
     with (
         TestClient(app) as client,
@@ -188,7 +191,7 @@ def test_websocket_cancel_is_idempotent_and_allows_next_request() -> None:
 
 
 def test_websocket_fatal_audio_error_terminates_request() -> None:
-    app = create_app(AppSettings(_env_file=None))
+    app = _configured_app()
 
     with (
         TestClient(app) as client,
@@ -229,6 +232,23 @@ def test_websocket_heartbeat_accepts_matching_pong() -> None:
 
         assert ping["type"] == "session.ping"
         assert isinstance(ping["payload"]["nonce"], str)
+
+
+def test_websocket_rejects_request_when_omni_is_unconfigured() -> None:
+    app = create_app(AppSettings(_env_file=None), OmniAdapter())
+
+    with (
+        TestClient(app) as client,
+        client.websocket_connect("/v1/voice/ws", subprotocols=[VOICE_SUBPROTOCOL]) as websocket,
+    ):
+        _handshake(websocket)
+        request_id = uuid.uuid4()
+        websocket.send_json(_envelope("request.start", request_id, _request_start_payload()))
+        error = websocket.receive_json()
+
+        assert error["request_id"] == str(request_id)
+        assert error["payload"]["code"] == "model_unavailable"
+        assert error["payload"]["fatal"] is True
 
 
 def _envelope(
@@ -308,3 +328,10 @@ def _input_frame(
 def _handshake(websocket: WebSocketTestSession) -> None:
     websocket.send_json(_envelope("client.hello", None, _client_hello_payload()))
     websocket.receive_json()
+
+
+def _configured_app() -> FastAPI:
+    return create_app(
+        AppSettings(_env_file=None),
+        OmniAdapter(FakeSpeechEngine()),
+    )
