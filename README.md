@@ -29,4 +29,4 @@ MindSurf Backend 是 MindSurf 项目的后端服务仓库，负责提供后端 A
 ## TODO
 - [ ] 完善 README 文档
 - [ ] 完善后端 API 文档
-- [ ] 完善docker配置文件
+- [x] 完善docker配置文件

@@ -16,18 +16,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
         with:
-          version: "0.5.0"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
+          version: "0.11.31"
           python-version: "3.12"
+          enable-cache: true
 
       - name: Build package
-        run: uv build
+        run: uv build --frozen
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

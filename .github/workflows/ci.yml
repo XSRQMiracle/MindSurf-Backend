@@ -1,56 +1,184 @@
-name: CI/CD Pipeline
-
-# ============================================================================
-# CI/CD Pipeline Orchestrator
-# ============================================================================
-# This is the main CI/CD pipeline that orchestrates smaller, modular workflows.
-# Each workflow can also be run independently for better maintainability.
-#
-# Workflow Structure:
-# ├── quality.yml     - Code quality checks (ruff, mypy, pre-commit)
-# ├── test.yml        - Test suite with coverage
-# ├── build-docker.yml - Docker image builds (CPU/GPU)
-# └── release.yml     - GitHub release creation (triggered by version tags)
-#
-# This workflow works OUT-OF-THE-BOX without requiring any secrets.
-# ============================================================================
+name: CI and production deployment
 
 on:
-  push:
-    branches:
-      - master
-      - develop
   pull_request:
-    branches:
-      - master
-      - develop
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the published image to the production server
+        type: boolean
+        default: true
 
 permissions:
   contents: read
-  pull-requests: write
-  checks: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Step 1: Code Quality Checks
   quality:
-    name: Quality
-    uses: ./.github/workflows/quality.yml
+    name: Lint and type check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  # Step 2: Test Suite & Coverage
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install development dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Ruff lint
+        run: >-
+          uv run ruff check
+          src/mindsurf_backend src/mindsurf_omni
+          tests/backend tests/omni
+
+      - name: Mypy
+        env:
+          MYPYPATH: src
+        run: uv run mypy src/mindsurf_backend src/mindsurf_omni
+
   test:
     name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install development dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Run test suite
+        run: uv run pytest --no-cov tests/backend tests/omni
+
+  container:
+    name: Build and publish production image
+    if: github.event_name != 'pull_request'
+    needs: [quality, test]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
-      checks: write
-    uses: ./.github/workflows/test.yml
+      packages: write
+      attestations: write
+      id-token: write
+    outputs:
+      image: ${{ steps.image.outputs.immutable }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  # Step 3: Build Docker Images (after all checks pass)
-  build-docker:
-    name: Build Docker
-    needs: [quality, test]
-    uses: ./.github/workflows/build-docker.yml
+      - name: Resolve lowercase image name
+        id: image
+        shell: bash
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "name=$image" >> "$GITHUB_OUTPUT"
+          echo "immutable=$image:sha-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push immutable image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.production
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.immutable }}
+            ${{ steps.image.outputs.name }}:main
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=mindsurf-production
+          cache-to: type=gha,mode=max,scope=mindsurf-production
+          provenance: mode=max
+          sbom: true
+
+  deploy:
+    name: Deploy production
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy)
+    needs: container
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout deployment files
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Upload deployment definition
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          : "${DEPLOY_HOST:?Set DEPLOY_HOST}"
+          : "${DEPLOY_USER:?Set DEPLOY_USER}"
+          : "${DEPLOY_PATH:?Set the DEPLOY_PATH repository variable}"
+          port="${DEPLOY_PORT:-22}"
+          ssh -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p -- '$DEPLOY_PATH'"
+          scp -P "$port" \
+            deploy/compose.production.yml \
+            deploy/remote-deploy.sh \
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Pull and deploy with rollback
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE: ${{ needs.container.outputs.image }}
+        run: |
+          port="${DEPLOY_PORT:-22}"
+          printf '%s' "$GHCR_TOKEN" | ssh -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker login ghcr.io --username '$GHCR_USER' --password-stdin"
+          ssh -p "$port" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "chmod 700 '$DEPLOY_PATH/remote-deploy.sh' && '$DEPLOY_PATH/remote-deploy.sh' '$IMAGE'"
